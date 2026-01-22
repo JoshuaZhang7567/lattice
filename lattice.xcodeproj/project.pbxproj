@@ -6,13 +6,32 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		7DA4EBC22F21D3F9000A3158 /* GoogleAPIClientForREST_Calendar in Frameworks */ = {isa = PBXBuildFile; productRef = 7DA4EBC12F21D3F9000A3158 /* GoogleAPIClientForREST_Calendar */; };
+		7DA4EBC52F21D406000A3158 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 7DA4EBC42F21D406000A3158 /* GoogleSignIn */; };
+		7DA4EBC72F21D406000A3158 /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 7DA4EBC62F21D406000A3158 /* GoogleSignInSwift */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		7DA4EBAE2F21D374000A3158 /* lattice.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = lattice.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		7DA4EBBF2F21D3B9000A3158 /* Exceptions for "lattice" folder in "lattice" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 7DA4EBAD2F21D374000A3158 /* lattice */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		7DA4EBB02F21D374000A3158 /* lattice */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				7DA4EBBF2F21D3B9000A3158 /* Exceptions for "lattice" folder in "lattice" target */,
+			);
 			path = lattice;
 			sourceTree = "<group>";
 		};
@@ -23,6 +42,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				7DA4EBC72F21D406000A3158 /* GoogleSignInSwift in Frameworks */,
+				7DA4EBC22F21D3F9000A3158 /* GoogleAPIClientForREST_Calendar in Frameworks */,
+				7DA4EBC52F21D406000A3158 /* GoogleSignIn in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +87,9 @@
 			);
 			name = lattice;
 			packageProductDependencies = (
+				7DA4EBC12F21D3F9000A3158 /* GoogleAPIClientForREST_Calendar */,
+				7DA4EBC42F21D406000A3158 /* GoogleSignIn */,
+				7DA4EBC62F21D406000A3158 /* GoogleSignInSwift */,
 			);
 			productName = lattice;
 			productReference = 7DA4EBAE2F21D374000A3158 /* lattice.app */;
@@ -94,6 +119,10 @@
 			);
 			mainGroup = 7DA4EBA52F21D374000A3158;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				7DA4EBC02F21D3F9000A3158 /* XCRemoteSwiftPackageReference "google-api-objectivec-client-for-rest" */,
+				7DA4EBC32F21D406000A3158 /* XCRemoteSwiftPackageReference "googlesignin-ios" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 7DA4EBAF2F21D374000A3158 /* Products */;
 			projectDirPath = "";
@@ -253,6 +282,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = lattice/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -284,6 +314,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = lattice/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -328,6 +359,43 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		7DA4EBC02F21D3F9000A3158 /* XCRemoteSwiftPackageReference "google-api-objectivec-client-for-rest" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/google/google-api-objectivec-client-for-rest";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+		7DA4EBC32F21D406000A3158 /* XCRemoteSwiftPackageReference "googlesignin-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/google/googlesignin-ios";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 9.1.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		7DA4EBC12F21D3F9000A3158 /* GoogleAPIClientForREST_Calendar */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 7DA4EBC02F21D3F9000A3158 /* XCRemoteSwiftPackageReference "google-api-objectivec-client-for-rest" */;
+			productName = GoogleAPIClientForREST_Calendar;
+		};
+		7DA4EBC42F21D406000A3158 /* GoogleSignIn */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 7DA4EBC32F21D406000A3158 /* XCRemoteSwiftPackageReference "googlesignin-ios" */;
+			productName = GoogleSignIn;
+		};
+		7DA4EBC62F21D406000A3158 /* GoogleSignInSwift */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 7DA4EBC32F21D406000A3158 /* XCRemoteSwiftPackageReference "googlesignin-ios" */;
+			productName = GoogleSignInSwift;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 7DA4EBA62F21D374000A3158 /* Project object */;
 }
