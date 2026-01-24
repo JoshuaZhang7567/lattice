@@ -120,20 +120,21 @@ class CalendarManager {
             let nextBusyStart = busyRanges.first(where: { $0.0 > currentTime })?.0 ?? dayEnd
             let gapDuration = nextBusyStart.timeIntervalSince(currentTime)
             
-            // 1-Hour Skip if blocked
-            if blockedSlots.contains(currentTime) {
-                currentTime = currentTime.addingTimeInterval(3600)
+            // IMPROVED BLOCK CHECK: Check if any blocked slot falls within the current hour
+            if blockedSlots.contains(where: { calendar.isDate($0, equalTo: currentTime, toGranularity: .hour) }) {
+                currentTime = calendar.date(byAdding: .hour, value: 1, to: currentTime)!
                 continue
             }
                 
             // Find candidates
             let candidates = sortedTasks.filter { task in
-                let taskDuration = Double(task.durationMinutes) * 60
-                let fitsInGap = taskDuration <= gapDuration
-                let isUnused = !usedTaskIDs.contains(task.persistentModelID)
-                let finishesBeforeDeadline = currentTime.addingTimeInterval(taskDuration) <= task.targetDate
-                
-                return fitsInGap && isUnused && finishesBeforeDeadline
+                    let taskDuration = Double(task.durationMinutes) * 60
+                    let fitsInGap = taskDuration <= gapDuration
+                    let isUnused = !usedTaskIDs.contains(task.persistentModelID)
+                    
+                    // If it's already archived, we still want it to "show up" where it was originally placed
+                    // OR simply include it in the pool.
+                    return fitsInGap && isUnused
             }
             
             if !candidates.isEmpty {

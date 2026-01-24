@@ -9,8 +9,10 @@ struct ContentView: View {
     @Environment(\.modelContext) var modelContext
     
     // NAVIGATION STATE (0=Tasks, 1=Schedule, 2=Archive)
-    @State private var selectedTab: Int = 0
+    @State private var selectedTab: Int = 1
+    @State private var isMovingForward: Bool = true // Explicitly track direction
     @State private var showNewTask = false
+    
     
     // ACTIVE TASKS
     @Query(filter: #Predicate<LatticeTask> { !$0.isArchived },
@@ -66,13 +68,13 @@ struct ContentView: View {
                         ZStack {
                             if selectedTab == 0 {
                                 TaskPageView(tasks: tasks, showNewTask: $showNewTask, modelContext: modelContext)
-                                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                                    .transition(slideTransition)
                             } else if selectedTab == 1 {
                                 CalendarPageView(items: calendarManager.dailySchedule, allTasks: tasks)
-                                    .transition(.opacity.combined(with: .move(edge: .trailing)))
+                                    .transition(slideTransition)
                             } else {
                                 ArchivePageView(tasks: archivedTasks, modelContext: modelContext)
-                                    .transition(.opacity.combined(with: .move(edge: .trailing)))
+                                    .transition(slideTransition)
                             }
                         }
                         .animation(.easeInOut(duration: 0.25), value: selectedTab)
@@ -110,7 +112,15 @@ struct ContentView: View {
     
     func toggleButton(title: String, index: Int) -> some View {
         Button {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { selectedTab = index }
+            if selectedTab != index {
+                // 1. Determine direction before the change
+                isMovingForward = index > selectedTab
+                
+                // 2. Trigger the animation
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                    selectedTab = index
+                }
+            }
         } label: {
             Text(title)
                 .font(.subheadline.weight(.semibold))
@@ -125,6 +135,13 @@ struct ContentView: View {
         }
     }
     
+    var slideTransition: AnyTransition {
+        .asymmetric(
+            insertion: .move(edge: isMovingForward ? .trailing : .leading).combined(with: .opacity),
+            removal: .move(edge: isMovingForward ? .leading : .trailing).combined(with: .opacity)
+        )
+    }
+    
     func signIn() {
         guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
               let rootVC = windowScene.windows.first?.rootViewController else { return }
@@ -137,6 +154,8 @@ struct ContentView: View {
         }
     }
 }
+
+
 // MARK: - SUBVIEW 1: TASK LIST (Unchanged)
 struct TaskPageView: View {
     var tasks: [LatticeTask]
@@ -233,9 +252,6 @@ struct TaskPageView: View {
 }
 
 // MARK: - SUBVIEW 2: TIMELINE CALENDAR PAGE (UPDATED)
-import SwiftUI
-import GoogleAPIClientForREST_Calendar
-
 struct CalendarPageView: View {
     var items: [CalendarItem]
     var allTasks: [LatticeTask]
@@ -287,6 +303,7 @@ struct CalendarPageView: View {
                     .padding(.top, 20)
                     
                     // EVENTS & TASKS
+                    // Inside CalendarPageView -> ScrollView -> ZStack
                     ForEach(Array(items.enumerated()), id: \.offset) { (index, item) in
                         switch item {
                         case .event(let event):
@@ -305,11 +322,20 @@ struct CalendarPageView: View {
                                 },
                                 onSwipeLeft: {
                                     withAnimation {
+                                        // Logic for delete or snooze
                                         calendarManager.swipeLeft(on: date)
                                         calendarManager.generateSchedule(with: allTasks, dayStartHour: 8, dayEndHour: 20)
                                     }
                                 }
                             )
+                            // --- ADDED DOUBLE TAP & UPDATED SINGLE TAP ---
+                            .onTapGesture(count: 2) {
+                                let generator = UINotificationFeedbackGenerator()
+                                generator.notificationOccurred(.success)
+                                withAnimation {
+                                    task.isArchived = true
+                                }
+                            }
                             .onTapGesture {
                                 taskToArchive = task
                                 showArchiveAlert = true
@@ -393,63 +419,80 @@ struct SwipeableTaskCard: View {
     let hourHeight: CGFloat
     let timeColumnWidth: CGFloat
     
-    var onSwipeRight: () -> Void
-    var onSwipeLeft: () -> Void
+    var onSwipeRight: () -> Void // Suggest Next
+    var onSwipeLeft: () -> Void  // Block 1 Hour
     
-    @State private var offset: CGSize = .zero
+    @State private var offset: CGFloat = 0
     private let calendar = Calendar.current
     
     var body: some View {
         let end = startTime.addingTimeInterval(Double(task.durationMinutes) * 60)
         let pos = calculatePosition(start: startTime, end: end)
         
-        EventCard(title: task.title, location: "Suggested (Deadline: \(task.targetDate.formatted(date: .omitted, time: .shortened)))", color: .green)
-            .frame(height: pos.height - 2)
+        ZStack {
+            // --- BACKGROUND LAYER (Actions) ---
+            HStack(spacing: 0) {
+                // Blue: Suggest Next (Right Swipe)
+                Rectangle().fill(Color.blue)
+                    .overlay(Image(systemName: "arrow.right.circle.fill").foregroundColor(.white).padding(.leading, 20), alignment: .leading)
+                    .opacity(offset > 0 ? 1 : 0)
+                
+                // Red: Block Slot (Left Swipe)
+                Rectangle().fill(Color.red)
+                    .overlay(Image(systemName: "hand.raised.fill").foregroundColor(.white).padding(.trailing, 20), alignment: .trailing)
+                    .opacity(offset < 0 ? 1 : 0)
+            }
+            .cornerRadius(6)
             .padding(.leading, timeColumnWidth + 10)
             .padding(.trailing, 10)
-            .offset(y: pos.y)
-            // ANIMATION OFFSET
-            .offset(x: offset.width, y: 0)
-            .rotationEffect(.degrees(Double(offset.width / 20)))
-            .opacity(2 - Double(abs(offset.width / 100))) // Fade out as you drag
+
+            // --- FOREGROUND CARD ---
+            EventCard(
+                title: task.title,
+                location: "Suggested",
+                color: .green,
+                isArchived: task.isArchived,
+                onCheckmarkTap: {
+                    withAnimation(.spring()) {
+                        task.isArchived.toggle()
+                    }
+                }
+            )
+            .padding(.leading, timeColumnWidth + 10)
+            .padding(.trailing, 10)
+            .offset(x: offset)
             .gesture(
                 DragGesture()
                     .onChanged { gesture in
-                        withAnimation(.interactiveSpring()) {
-                            offset = gesture.translation
+                        if !task.isArchived {
+                            offset = gesture.translation.width
                         }
                     }
                     .onEnded { gesture in
                         if gesture.translation.width > 100 {
-                            // Trigger Right Action
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                offset.width = 500 // Fly off screen
-                            }
-                            // Wait for animation then reset & callback
+                            // Suggest Next Task
+                            withAnimation(.easeOut(duration: 0.2)) { offset = 500 }
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                                 onSwipeRight()
-                                offset = .zero
+                                offset = 0
                             }
                         } else if gesture.translation.width < -100 {
-                            // Trigger Left Action
-                            withAnimation(.easeOut(duration: 0.2)) {
-                                offset.width = -500 // Fly off screen
-                            }
+                            // Block this hour
+                            withAnimation(.easeOut(duration: 0.2)) { offset = -500 }
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                                 onSwipeLeft()
-                                offset = .zero
+                                offset = 0
                             }
                         } else {
-                            // Snap back if scroll wasn't far enough
-                            withAnimation(.spring()) {
-                                offset = .zero
-                            }
+                            withAnimation(.spring()) { offset = 0 }
                         }
                     }
             )
+        }
+        .frame(height: pos.height - 2)
+        .offset(y: pos.y)
     }
     
-    // Duplicate math helper needed inside this struct
     func calculatePosition(start: Date, end: Date) -> (y: CGFloat, height: CGFloat) {
         let startHour = calendar.component(.hour, from: start)
         let startMinute = calendar.component(.minute, from: start)
@@ -468,42 +511,47 @@ struct EventCard: View {
     var title: String
     var location: String?
     var color: Color
-    
+    var isArchived: Bool = false
+    var onCheckmarkTap: (() -> Void)?
+
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            // Accent Bar
+        HStack(alignment: .center, spacing: 0) {
             Rectangle()
-                .fill(color.opacity(0.8))
-                .frame(width: 3)
+                .fill(isArchived ? Color.gray.opacity(0.4) : color.opacity(0.8))
+                .frame(width: 4)
             
+            if let onCheckmarkTap = onCheckmarkTap {
+                Button(action: onCheckmarkTap) {
+                    Image(systemName: isArchived ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 18))
+                        .foregroundColor(isArchived ? .green : .white.opacity(0.4))
+                }
+                .padding(.leading, 10)
+            }
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.95))
-                    .lineLimit(1)
+                    .foregroundColor(isArchived ? .white.opacity(0.3) : .white)
+                    .strikethrough(isArchived)
                 
                 if let location = location {
                     Text(location)
                         .font(.system(size: 10))
-                        .foregroundColor(.white.opacity(0.6))
-                        .lineLimit(1)
+                        .foregroundColor(.white.opacity(0.3))
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
             
             Spacer()
         }
+        .background(isArchived ? Color.white.opacity(0.05) : Color.white.opacity(0.1))
         .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(color.opacity(0.3), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.3), radius: 2, x: 0, y: 1)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.1), lineWidth: 0.5))
     }
 }
-
 // MARK: - HELPER: CURRENT TIME LINE (Unchanged)
 struct CurrentTimeLine: View {
     let hourHeight: CGFloat
