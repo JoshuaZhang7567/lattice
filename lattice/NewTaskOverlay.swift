@@ -42,17 +42,17 @@ struct NewTaskOverlay: View {
                 }
                 
                 Divider().background(Color.white.opacity(0.2))
+            
                 
                 // 2. Date Picker (COMPACT ROW)
-                // This saves massive vertical space compared to the full calendar
                 HStack {
-                    Image(systemName: "calendar")
-                        .foregroundColor(.blue)
-                    Text("Start Time")
+                    Image(systemName: "calendar.badge.clock") // Changed icon to indicate deadline
+                        .foregroundColor(.red) // Red to indicate urgency/deadline
+                    Text("Due Date") // CHANGED FROM "Start Time"
                         .foregroundColor(.white.opacity(0.8))
                     Spacer()
                     DatePicker("", selection: $selectedDate)
-                        .labelsHidden() // Hides the default label
+                        .labelsHidden()
                         .colorScheme(.dark)
                 }
                 .padding(.vertical, 4)
