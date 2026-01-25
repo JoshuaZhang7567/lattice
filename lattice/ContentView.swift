@@ -70,7 +70,9 @@ struct ContentView: View {
                                 TaskPageView(tasks: tasks, showNewTask: $showNewTask, modelContext: modelContext)
                                     .transition(slideTransition)
                             } else if selectedTab == 1 {
-                                CalendarPageView(items: calendarManager.dailySchedule, allTasks: tasks)
+                                let allRelevantTasks = tasks + archivedTasks // Simplified filtering for now, manager handles dates
+                                let startWindow = Calendar.current.date(byAdding: .hour, value: -12, to: Date())!
+                                CalendarPageView(items: calendarManager.dailySchedule, allTasks: allRelevantTasks, rangeStart: startWindow)
                                     .transition(slideTransition)
                             } else {
                                 ArchivePageView(tasks: archivedTasks, modelContext: modelContext)
@@ -91,10 +93,13 @@ struct ContentView: View {
                     }
                 }
                 .preferredColorScheme(.dark)
+                .onAppear {
+                    refreshSchedule()
+                }
                 // TRIGGERS
-                .onChange(of: tasks) { _, newTasks in calendarManager.generateSchedule(with: newTasks, dayStartHour: 8, dayEndHour: 20) }
-                .onChange(of: calendarManager.rawGoogleEvents) { _, _ in calendarManager.generateSchedule(with: tasks, dayStartHour: 8, dayEndHour: 20) }
-                
+                .onChange(of: tasks) { _, _ in refreshSchedule() }
+                .onChange(of: archivedTasks) { _, _ in refreshSchedule() }
+                .onChange(of: calendarManager.rawGoogleEvents) { _, _ in refreshSchedule() }
             } else {
                 // LOGGED OUT
                 VStack(spacing: 24) {
@@ -152,6 +157,22 @@ struct ContentView: View {
                 calendarManager.fetchTodayEvents()
             }
         }
+    }
+    
+    func refreshSchedule() {
+        // Snap to current hour to align grid lines
+        let now = Date()
+        let cal = Calendar.current
+        let hour = cal.component(.hour, from: now)
+        let alignedNow = cal.date(bySettingHour: hour, minute: 0, second: 0, of: now)!
+        
+        // 12 hours before, 12 hours after
+        let start = cal.date(byAdding: .hour, value: -12, to: alignedNow)!
+        let end = cal.date(byAdding: .hour, value: 12, to: alignedNow)!
+        
+        // Include tasks that are active OR archived recently
+        let allRelevantTasks = tasks + archivedTasks
+        calendarManager.generateSchedule(with: allRelevantTasks, rangeStart: start, rangeEnd: end)
     }
 }
 
@@ -257,28 +278,44 @@ struct CalendarPageView: View {
     var allTasks: [LatticeTask]
     @Environment(CalendarManager.self) var calendarManager
     
-    // Alert State
-    @State private var taskToArchive: LatticeTask?
-    @State private var showArchiveAlert = false
-    
+    // Config
     // Config
     let hourHeight: CGFloat = 80
     let timeColumnWidth: CGFloat = 60
+    
+    // Rolling Window Config
+    // rangeStart is the "top" of the view (e.g. 12 hours ago)
+    var rangeStart: Date 
+    
+    // We display 25 hours to cover the full window [-12...12] inclusive or similar
+    // Actually, user asked for 12 before and 12 after -> 24 hours total span? 
+    // Or [-12...+12] = 24 hour span centered on now.
+    // Let's us indices 0 to 24, where 0 = rangeStart.
     let hours = Array(0...24)
     private let calendar = Calendar.current
     
-    func formatHour(_ hour: Int) -> String {
-        let startOfDay = calendar.startOfDay(for: Date())
-        if let date = calendar.date(byAdding: .hour, value: hour, to: startOfDay) {
+    func formatHour(_ offset: Int) -> String {
+        // hour is explicitly rangeStart + offset hours
+        if let date = calendar.date(byAdding: .hour, value: offset, to: rangeStart) {
             return date.formatted(.dateTime.hour().minute())
         }
-        return "\(hour):00"
+        return ""
     }
     
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
-            ScrollView {
+            ScrollViewReader { proxy in
+                ScrollView {
                 ZStack(alignment: .topLeading) {
+                    
+                    // SCROLL ANCHORS (Invisible VStack for reliable scrolling)
+                    VStack(spacing: 0) {
+                        ForEach(hours, id: \.self) { hour in
+                            Color.clear
+                                .frame(height: hourHeight)
+                                .id(hour)
+                        }
+                    }
                     
                     // GRID
                     ZStack(alignment: .topLeading) {
@@ -304,7 +341,7 @@ struct CalendarPageView: View {
                     
                     // EVENTS & TASKS
                     // Inside CalendarPageView -> ScrollView -> ZStack
-                    ForEach(Array(items.enumerated()), id: \.offset) { (index, item) in
+                    ForEach(items) { item in
                         switch item {
                         case .event(let event):
                             renderGoogleEvent(event)
@@ -314,41 +351,65 @@ struct CalendarPageView: View {
                                 startTime: date,
                                 hourHeight: hourHeight,
                                 timeColumnWidth: timeColumnWidth,
+                                rangeStart: rangeStart, // Pass it down
                                 onSwipeRight: {
                                     withAnimation {
                                         calendarManager.swipeRight(on: date)
-                                        calendarManager.generateSchedule(with: allTasks, dayStartHour: 8, dayEndHour: 20)
+                                        // trigger refresh via parent binding or direct call? 
+                                        // Ideally call refreshSchedule() from VM but VM doesn't know tasks.
+                                        // We updated swipeRight to just update offsets. 
+                                        // The view will re-render if it observes VM. 
+                                        // BUT we need to regenerate schedule.
+                                        // Let's call the passed closure or rely on onChange? 
+                                        // Actually, VM.swipeRight updates published props. 
+                                        // But generateSchedule must be called.
+                                        // Let's use a closure in VM or just rely on parent Refresh logic... 
+                                        // Parent Refresh sees changes in VM? No generateSchedule IS the manual refresh.
+                                        // Quick fix: pass refresh callback or access parent func?
+                                        // We can just call generateSchedule here with same params since we have them in scope?
+                                        // NO, we don't have 'allTasks' and 'rangeStart' effectively here? 
+                                        // Actually 'allTasks' and 'rangeStart' ARE available in CalendarPageView.
+                                        let end = Calendar.current.date(byAdding: .hour, value: 24, to: rangeStart)!
+                                        calendarManager.generateSchedule(with: allTasks, rangeStart: rangeStart, rangeEnd: end)
                                     }
                                 },
                                 onSwipeLeft: {
                                     withAnimation {
                                         // Logic for delete or snooze
                                         calendarManager.swipeLeft(on: date)
-                                        calendarManager.generateSchedule(with: allTasks, dayStartHour: 8, dayEndHour: 20)
+                                        let end = Calendar.current.date(byAdding: .hour, value: 24, to: rangeStart)!
+                                        calendarManager.generateSchedule(with: allTasks, rangeStart: rangeStart, rangeEnd: end)
                                     }
                                 }
                             )
-                            // --- ADDED DOUBLE TAP & UPDATED SINGLE TAP ---
-                            .onTapGesture(count: 2) {
-                                let generator = UINotificationFeedbackGenerator()
-                                generator.notificationOccurred(.success)
-                                withAnimation {
-                                    task.isArchived = true
-                                }
-                            }
+
+                            // --- SIMPLIFIED TAP: TOGGLE ARCHIVE ---
                             .onTapGesture {
-                                taskToArchive = task
-                                showArchiveAlert = true
+                                let generator = UIImpactFeedbackGenerator(style: .medium)
+                                generator.impactOccurred()
+                                withAnimation {
+                                    task.isArchived.toggle()
+                                    // Trigger immediate refresh to update schedule if needed
+                                    // But binding update should trigger onChange in ContentView
+                                }
                             }
                         }
                     }
+                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
                     
-                    CurrentTimeLine(hourHeight: hourHeight, gridTopPadding: 20)
+                    CurrentTimeLine(hourHeight: hourHeight, gridTopPadding: 20, rangeStart: rangeStart)
                 }
                 .frame(height: CGFloat(hours.count) * hourHeight + 100)
                 .frame(maxWidth: .infinity)
             }
             .scrollIndicators(.hidden)
+            .onAppear {
+                DispatchQueue.main.async {
+                    // Scroll to center (12 hours in)
+                    proxy.scrollTo(12, anchor: .center)
+                }
+            }
+        }
             
             // Refresh Button
             Button(action: {
@@ -356,7 +417,8 @@ struct CalendarPageView: View {
                 generator.impactOccurred()
                 withAnimation {
                     calendarManager.resetDailyState()
-                    calendarManager.generateSchedule(with: allTasks, dayStartHour: 8, dayEndHour: 20)
+                    let end = Calendar.current.date(byAdding: .hour, value: 24, to: rangeStart)!
+                    calendarManager.generateSchedule(with: allTasks, rangeStart: rangeStart, rangeEnd: end)
                 }
             }) {
                 Image(systemName: "arrow.counterclockwise")
@@ -369,18 +431,6 @@ struct CalendarPageView: View {
             .padding(.trailing, 25)
             .padding(.bottom, 25)
         }
-        .confirmationDialog("Archive Task?", isPresented: $showArchiveAlert, titleVisibility: .visible) {
-            Button("Archive Task", role: .destructive) {
-                if let task = taskToArchive {
-                    withAnimation {
-                        task.isArchived = true
-                    }
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This will move the task to the Archive.")
-        }
     }
     
     @ViewBuilder
@@ -389,26 +439,29 @@ struct CalendarPageView: View {
            let end = event.end?.dateTime?.date,
            calendar.isDateInToday(start) {
             
-            let pos = calculatePosition(start: start, end: end)
             
-            EventCard(title: event.summary ?? "Event", location: event.location, color: .blue)
-                .frame(height: pos.height - 2)
-                .padding(.leading, timeColumnWidth + 10)
-                .padding(.trailing, 10)
-                .offset(y: pos.y)
+            let pos = calculatePosition(start: start, end: end)
+            if pos.y >= 0 { // Simple check if it's within our window approx
+                EventCard(title: event.summary ?? "Event", location: event.location, color: .blue)
+                    .frame(height: pos.height - 2)
+                    .padding(.leading, timeColumnWidth + 10)
+                    .padding(.trailing, 10)
+                    .offset(y: pos.y)
+            }
         }
     }
     
     func calculatePosition(start: Date, end: Date) -> (y: CGFloat, height: CGFloat) {
-        let startHour = calendar.component(.hour, from: start)
-        let startMinute = calendar.component(.minute, from: start)
-        let endHour = calendar.component(.hour, from: end)
-        let endMinute = calendar.component(.minute, from: end)
+        // Calculate offset relative to rangeStart
+        let diff = start.timeIntervalSince(rangeStart)
+        let hoursFromStart = diff / 3600.0
         
-        let startY = (CGFloat(startHour) * hourHeight) + (CGFloat(startMinute) / 60.0 * hourHeight) + 20
-        let startDecimal = CGFloat(startHour) + CGFloat(startMinute) / 60.0
-        let endDecimal = CGFloat(endHour) + CGFloat(endMinute) / 60.0
-        let height = max((endDecimal - startDecimal) * hourHeight, 30)
+        // Duration
+        let duration = end.timeIntervalSince(start)
+        let durationHours = duration / 3600.0
+        
+        let startY = (CGFloat(hoursFromStart) * hourHeight) + 20
+        let height = max(CGFloat(durationHours) * hourHeight, 30)
         return (startY, height)
     }
 }
@@ -419,6 +472,9 @@ struct SwipeableTaskCard: View {
     let hourHeight: CGFloat
     let timeColumnWidth: CGFloat
     
+    // ADDED rangeStart
+    var rangeStart: Date 
+    
     var onSwipeRight: () -> Void // Suggest Next
     var onSwipeLeft: () -> Void  // Block 1 Hour
     
@@ -427,7 +483,7 @@ struct SwipeableTaskCard: View {
     
     var body: some View {
         let end = startTime.addingTimeInterval(Double(task.durationMinutes) * 60)
-        let pos = calculatePosition(start: startTime, end: end)
+        let pos = calculateLocalPosition(start: startTime, end: end)
         
         ZStack {
             // --- BACKGROUND LAYER (Actions) ---
@@ -493,18 +549,18 @@ struct SwipeableTaskCard: View {
         .offset(y: pos.y)
     }
     
-    func calculatePosition(start: Date, end: Date) -> (y: CGFloat, height: CGFloat) {
-        let startHour = calendar.component(.hour, from: start)
-        let startMinute = calendar.component(.minute, from: start)
-        let endHour = calendar.component(.hour, from: end)
-        let endMinute = calendar.component(.minute, from: end)
+    func calculateLocalPosition(start: Date, end: Date) -> (y: CGFloat, height: CGFloat) {
+        let diff = start.timeIntervalSince(rangeStart)
+        let hoursFromStart = diff / 3600.0
+        let duration = end.timeIntervalSince(start)
+        let durationHours = duration / 3600.0
         
-        let startY = (CGFloat(startHour) * hourHeight) + (CGFloat(startMinute) / 60.0 * hourHeight) + 20
-        let startDecimal = CGFloat(startHour) + CGFloat(startMinute) / 60.0
-        let endDecimal = CGFloat(endHour) + CGFloat(endMinute) / 60.0
-        let height = max((endDecimal - startDecimal) * hourHeight, 30)
+        let startY = (CGFloat(hoursFromStart) * hourHeight) + 20
+        let height = max(CGFloat(durationHours) * hourHeight, 30)
         return (startY, height)
     }
+    
+
 }
 // MARK: - HELPER: GENERIC EVENT CARD
 struct EventCard: View {
@@ -582,12 +638,22 @@ struct CurrentTimeLine: View {
         }
     }
     
+    // ADDED rangeStart
+    var rangeStart: Date?
+    
     func updatePosition() {
         let now = Date()
-        let cal = Calendar.current
-        let hour = cal.component(.hour, from: now)
-        let minute = cal.component(.minute, from: now)
-        offset = (CGFloat(hour) * hourHeight) + (CGFloat(minute) / 60.0 * hourHeight) + gridTopPadding
+        if let start = rangeStart {
+             let diff = now.timeIntervalSince(start)
+             let hours = diff / 3600.0
+             offset = (CGFloat(hours) * hourHeight) + gridTopPadding
+        } else {
+             // Fallback
+             let cal = Calendar.current
+             let hour = cal.component(.hour, from: now)
+             let minute = cal.component(.minute, from: now)
+             offset = (CGFloat(hour) * hourHeight) + (CGFloat(minute) / 60.0 * hourHeight) + gridTopPadding
+        }
     }
 }
 
