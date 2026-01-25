@@ -479,6 +479,7 @@ struct SwipeableTaskCard: View {
     var onSwipeLeft: () -> Void  // Block 1 Hour
     
     @State private var offset: CGFloat = 0
+    @State private var isVisible: Bool = true
     private let calendar = Calendar.current
     
     var body: some View {
@@ -487,7 +488,7 @@ struct SwipeableTaskCard: View {
         
         ZStack {
             // --- BACKGROUND LAYER (Actions) ---
-            HStack(spacing: 0) {
+            ZStack {
                 // Blue: Suggest Next (Right Swipe)
                 Rectangle().fill(Color.blue)
                     .overlay(Image(systemName: "arrow.right.circle.fill").foregroundColor(.white).padding(.leading, 20), alignment: .leading)
@@ -526,18 +527,36 @@ struct SwipeableTaskCard: View {
                     }
                     .onEnded { gesture in
                         if gesture.translation.width > 100 {
-                            // Suggest Next Task
+                            // Suggest Next Task: Slide out -> Fade Out -> Update
                             withAnimation(.easeOut(duration: 0.2)) { offset = 500 }
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                withAnimation(.easeOut(duration: 0.2)) { isVisible = false }
+                            }
+                            
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                                 onSwipeRight()
-                                offset = 0
+                                // Safeguard: Reset state if view is reused (e.g. same task or no change)
+                                withAnimation(.spring()) {
+                                    isVisible = true
+                                    offset = 0
+                                }
                             }
                         } else if gesture.translation.width < -100 {
-                            // Block this hour
+                            // Block this hour: Slide out -> Fade Out -> Update
                             withAnimation(.easeOut(duration: 0.2)) { offset = -500 }
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                withAnimation(.easeOut(duration: 0.2)) { isVisible = false }
+                            }
+                            
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                                 onSwipeLeft()
-                                offset = 0
+                                // Safeguard: Reset state if view is reused
+                                withAnimation(.spring()) {
+                                    isVisible = true
+                                    offset = 0
+                                }
                             }
                         } else {
                             withAnimation(.spring()) { offset = 0 }
@@ -547,6 +566,22 @@ struct SwipeableTaskCard: View {
         }
         .frame(height: pos.height - 2)
         .offset(y: pos.y)
+        .opacity(isVisible ? 1 : 0)
+        .onChange(of: startTime) { _, _ in
+            // Data updated (New Y position).
+            // Reset X-offset instantly while hidden.
+            var transaction = Transaction(animation: .none)
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                isVisible = false // Ensure hidden
+                offset = 0 
+            }
+            
+            // Fade back in
+            withAnimation(.easeIn(duration: 0.3).delay(0.05)) {
+                isVisible = true
+            }
+        }
     }
     
     func calculateLocalPosition(start: Date, end: Date) -> (y: CGFloat, height: CGFloat) {
