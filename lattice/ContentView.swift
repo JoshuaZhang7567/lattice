@@ -71,7 +71,10 @@ struct ContentView: View {
                                     .transition(slideTransition)
                             } else if selectedTab == 1 {
                                 let allRelevantTasks = tasks + archivedTasks // Simplified filtering for now, manager handles dates
-                                let startWindow = Calendar.current.date(byAdding: .hour, value: -12, to: Date())!
+                                let cal = Calendar.current
+                                let now = Date()
+                                let alignedNow = cal.date(bySettingHour: cal.component(.hour, from: now), minute: 0, second: 0, of: now) ?? now
+                                let startWindow = cal.date(byAdding: .hour, value: -12, to: alignedNow)!
                                 CalendarPageView(items: calendarManager.dailySchedule, allTasks: allRelevantTasks, rangeStart: startWindow)
                                     .transition(slideTransition)
                             } else {

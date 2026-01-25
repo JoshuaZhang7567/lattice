@@ -73,9 +73,14 @@ class CalendarManager {
             }
         }
         
-        // 2. Sort Tasks by Deadline
+        // 2. Sort Tasks by Deadline (Deterministic Tie-Breaker)
         let sortedTasks = tasks.sorted {
-            ($0.targetDate) < ($1.targetDate)
+            if $0.targetDate != $1.targetDate {
+                return $0.targetDate < $1.targetDate
+            }
+            // Tie-breaker: Use persistent ID string representation (or creation date if available)
+            // Assuming stable sort is needed regardless of active/archive status.
+            return String(describing: $0.persistentModelID) < String(describing: $1.persistentModelID)
         }
         
         // 3. Define Day Boundaries using passed range
