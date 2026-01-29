@@ -215,6 +215,8 @@ struct TaskPageView: View {
                 Color.clear.frame(height: 10).listRowBackground(Color.clear).listRowSeparator(.hidden)
                 
                 ForEach(tasks) { task in
+                    let isOverdue = task.targetDate < Date()
+                    
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(task.title)
@@ -223,7 +225,7 @@ struct TaskPageView: View {
                             
                             Text(task.targetDate.formatted(date: .abbreviated, time: .shortened))
                                 .font(.caption)
-                                .foregroundColor(.gray)
+                                .foregroundColor(isOverdue ? .red.opacity(0.8) : .gray)
                         }
                         .padding(.vertical, 18)
                         .padding(.horizontal, 20)
@@ -241,8 +243,11 @@ struct TaskPageView: View {
                     }
                     .background(.ultraThinMaterial)
                     .clipShape(RoundedRectangle(cornerRadius: 16))
-                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(0.15), lineWidth: 0.5))
-                    .shadow(color: .black.opacity(0.2), radius: 10, x: 0, y: 5)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(isOverdue ? Color.red.opacity(0.8) : .white.opacity(0.15), lineWidth: isOverdue ? 1 : 0.5)
+                    )
+                    .shadow(color: isOverdue ? Color.red.opacity(0.6) : .black.opacity(0.2), radius: isOverdue ? 15 : 10, x: 0, y: isOverdue ? 0 : 5)
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
@@ -550,6 +555,7 @@ struct SwipeableTaskCard: View {
                 location: isPast ? "Not Done" : "Suggested",
                 color: isPast ? .orange : .green,
                 isArchived: task.isArchived,
+                isOverdue: task.targetDate < Date() && !task.isArchived,
                 onCheckmarkTap: {
                     withAnimation(.spring()) {
                         task.isArchived.toggle()
@@ -652,6 +658,7 @@ struct EventCard: View {
     var location: String?
     var color: Color
     var isArchived: Bool = false
+    var isOverdue: Bool = false
     var onCheckmarkTap: (() -> Void)?
 
     var body: some View {
@@ -689,7 +696,11 @@ struct EventCard: View {
         .background(isArchived ? Color.white.opacity(0.05) : Color.white.opacity(0.1))
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.1), lineWidth: 0.5))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(isOverdue ? Color.red.opacity(0.8) : Color.white.opacity(0.1), lineWidth: isOverdue ? 1 : 0.5)
+        )
+        .shadow(color: isOverdue ? Color.red.opacity(0.6) : .clear, radius: 15, x: 0, y: 0)
     }
 }
 // MARK: - HELPER: CURRENT TIME LINE (Unchanged)
