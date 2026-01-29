@@ -12,6 +12,7 @@ struct ContentView: View {
     @State private var selectedTab: Int = 1
     @State private var isMovingForward: Bool = true // Explicitly track direction
     @State private var showNewTask = false
+    @State private var showSettings = false // [NEW] Settings Sheet State
     
     
     // ACTIVE TASKS
@@ -44,11 +45,25 @@ struct ContentView: View {
                         
                         // 1. HEADER & 3-WAY TOGGLE
                         VStack(spacing: 20) {
-                            Text("LATTICE")
-                                .font(.system(size: 14, weight: .bold, design: .monospaced))
-                                .tracking(4)
-                                .foregroundColor(.white.opacity(0.6))
-                                .padding(.top, 10)
+                            HStack {
+                                Spacer()
+                                Text("LATTICE")
+                                    .font(.system(size: 14, weight: .bold, design: .monospaced))
+                                    .tracking(4)
+                                    .foregroundColor(.white.opacity(0.6))
+                                Spacer()
+                                
+                                // Settings Button
+                                Button(action: {
+                                    showSettings = true
+                                }) {
+                                    Image(systemName: "gearshape.fill")
+                                        .font(.system(size: 18))
+                                        .foregroundColor(.white.opacity(0.6))
+                                }
+                                .padding(.trailing, 20)
+                            }
+                            .padding(.top, 10)
                             
                             // THE GLASS TOGGLE
                             HStack(spacing: 0) {
@@ -99,10 +114,17 @@ struct ContentView: View {
                 .onAppear {
                     refreshSchedule()
                 }
+                .sheet(isPresented: $showSettings) {
+                    SettingsView()
+                        .presentationDetents([.fraction(0.4)])
+                        .presentationDragIndicator(.visible)
+                }
                 // TRIGGERS
                 .onChange(of: tasks) { _, _ in refreshSchedule() }
                 .onChange(of: archivedTasks) { _, _ in refreshSchedule() }
                 .onChange(of: calendarManager.rawGoogleEvents) { _, _ in refreshSchedule() }
+                .onChange(of: calendarManager.dayStartHour) { _, _ in refreshSchedule() }
+                .onChange(of: calendarManager.dayEndHour) { _, _ in refreshSchedule() }
             } else {
                 // LOGGED OUT
                 VStack(spacing: 24) {
@@ -362,21 +384,19 @@ struct CalendarPageView: View {
                                 rangeStart: rangeStart, // Pass it down
                                 onSwipeRight: {
                                     withAnimation {
-                                        calendarManager.swipeRight(on: date)
-                                        // trigger refresh via parent binding or direct call? 
-                                        // Ideally call refreshSchedule() from VM but VM doesn't know tasks.
-                                        // We updated swipeRight to just update offsets. 
-                                        // The view will re-render if it observes VM. 
-                                        // BUT we need to regenerate schedule.
-                                        // Let's call the passed closure or rely on onChange? 
-                                        // Actually, VM.swipeRight updates published props. 
-                                        // But generateSchedule must be called.
-                                        // Let's use a closure in VM or just rely on parent Refresh logic... 
-                                        // Parent Refresh sees changes in VM? No generateSchedule IS the manual refresh.
-                                        // Quick fix: pass refresh callback or access parent func?
-                                        // We can just call generateSchedule here with same params since we have them in scope?
-                                        // NO, we don't have 'allTasks' and 'rangeStart' effectively here? 
-                                        // Actually 'allTasks' and 'rangeStart' ARE available in CalendarPageView.
+                                        // PAST TASK LOGIC: "Return to Pool" / "Not Done"
+                                        // If it's in the past, we DON'T call swipeRight (which increments offset).
+                                        // We just refresh. The scheduler will see it's now in the past/unassigned 
+                                        // (wait, if we don't change state, it stays there? 
+                                        // Scheduler only schedules from 'now'. So if we refresh, it will be moved to > 'now'.
+                                        // It works automatically because 'generateSchedule' starts at 'now'. 
+                                        // So simply refreshing moves past tasks to future.)
+                                        
+                                        if date >= Date() {
+                                            // FUTURE TASK: "Suggest Next"
+                                            calendarManager.swipeRight(on: date)
+                                        }
+                                        
                                         let end = Calendar.current.date(byAdding: .hour, value: 24, to: rangeStart)!
                                         calendarManager.generateSchedule(with: allTasks, rangeStart: rangeStart, rangeEnd: end)
                                     }
@@ -503,19 +523,31 @@ struct SwipeableTaskCard: View {
     var body: some View {
         let end = startTime.addingTimeInterval(Double(task.durationMinutes) * 60)
         let pos = calculateLocalPosition(start: startTime, end: end)
+        // Check if task is in the past (end time < now)
+        let isPast = end < Date()
         
         ZStack {
             // --- BACKGROUND LAYER (Actions) ---
             ZStack {
-                // Blue: Suggest Next (Right Swipe)
-                Rectangle().fill(Color.blue)
-                    .overlay(Image(systemName: "arrow.right.circle.fill").foregroundColor(.white).padding(.leading, 20), alignment: .leading)
-                    .opacity(offset > 0 ? 1 : 0)
+                // Right Swipe Background
+                if isPast {
+                    // Orange: Return to Pool (Not Done)
+                    Rectangle().fill(Color.orange)
+                        .overlay(Image(systemName: "arrow.counterclockwise.circle.fill").foregroundColor(.white).padding(.leading, 20), alignment: .leading)
+                        .opacity(offset > 0 ? 1 : 0)
+                } else {
+                    // Blue: Suggest Next
+                    Rectangle().fill(Color.blue)
+                        .overlay(Image(systemName: "arrow.right.circle.fill").foregroundColor(.white).padding(.leading, 20), alignment: .leading)
+                        .opacity(offset > 0 ? 1 : 0)
+                }
                 
-                // Red: Block Slot (Left Swipe)
-                Rectangle().fill(Color.red)
-                    .overlay(Image(systemName: "hand.raised.fill").foregroundColor(.white).padding(.trailing, 20), alignment: .trailing)
-                    .opacity(offset < 0 ? 1 : 0)
+                // Left Swipe Background (Red: Block Slot) - Only if FUTURE
+                if !isPast {
+                    Rectangle().fill(Color.red)
+                        .overlay(Image(systemName: "hand.raised.fill").foregroundColor(.white).padding(.trailing, 20), alignment: .trailing)
+                        .opacity(offset < 0 ? 1 : 0)
+                }
             }
             .cornerRadius(6)
             .padding(.leading, timeColumnWidth + 10)
@@ -524,8 +556,8 @@ struct SwipeableTaskCard: View {
             // --- FOREGROUND CARD ---
             EventCard(
                 title: task.title,
-                location: "Suggested",
-                color: .green,
+                location: isPast ? "Not Done" : "Suggested",
+                color: isPast ? .orange : .green,
                 isArchived: task.isArchived,
                 onCheckmarkTap: {
                     withAnimation(.spring()) {
@@ -540,12 +572,20 @@ struct SwipeableTaskCard: View {
                 DragGesture()
                     .onChanged { gesture in
                         if !task.isArchived {
-                            offset = gesture.translation.width
+                            // If past, only allow positive (right) swipe
+                            if isPast && gesture.translation.width < 0 {
+                                offset = 0
+                            } else {
+                                offset = gesture.translation.width
+                            }
                         }
                     }
                     .onEnded { gesture in
+                        // FIX: Prevent actions if archived
+                        guard !task.isArchived else { return }
+                        
                         if gesture.translation.width > 100 {
-                            // Suggest Next Task: Slide out -> Fade Out -> Update
+                            // Suggest Next / Return to Pool
                             withAnimation(.easeOut(duration: 0.2)) { offset = 500 }
                             
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
@@ -554,14 +594,14 @@ struct SwipeableTaskCard: View {
                             
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                                 onSwipeRight()
-                                // Safeguard: Reset state if view is reused (e.g. same task or no change)
+                                // Safeguard: Reset state
                                 withAnimation(.spring()) {
                                     isVisible = true
                                     offset = 0
                                 }
                             }
-                        } else if gesture.translation.width < -100 {
-                            // Block this hour: Slide out -> Fade Out -> Update
+                        } else if gesture.translation.width < -100 && !isPast {
+                            // Block this hour (Only if Future)
                             withAnimation(.easeOut(duration: 0.2)) { offset = -500 }
                             
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
@@ -570,7 +610,7 @@ struct SwipeableTaskCard: View {
                             
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                                 onSwipeLeft()
-                                // Safeguard: Reset state if view is reused
+                                // Safeguard: Reset state
                                 withAnimation(.spring()) {
                                     isVisible = true
                                     offset = 0

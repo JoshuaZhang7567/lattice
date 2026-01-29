@@ -26,7 +26,20 @@ class CalendarManager {
     var slotOffsets: [Date: Int] = [:]
     var blockedSlots: Set<Date> = []
     
+    // Preferences (Persisted)
+    var dayStartHour: Int {
+        didSet { UserDefaults.standard.set(dayStartHour, forKey: "dayStartHour") }
+    }
+    var dayEndHour: Int {
+        didSet { UserDefaults.standard.set(dayEndHour, forKey: "dayEndHour") }
+    }
+    
     private let service = GTLRCalendarService()
+    
+    init() {
+        self.dayStartHour = UserDefaults.standard.object(forKey: "dayStartHour") as? Int ?? 9
+        self.dayEndHour = UserDefaults.standard.object(forKey: "dayEndHour") as? Int ?? 17
+    }
     
     // --- AUTH & FETCH (Unchanged) ---
     func checkPreviousSignIn() {
@@ -100,10 +113,6 @@ class CalendarManager {
         let busyRanges = flattenRanges(rawRanges)
         
         // 5. Scan for Gaps
-        // Start scheduling from 'now' or start of range, whichever is later, to avoid scheduling in past
-
-        
-        // 5. Scan for Gaps
         // Start scheduling from 'now' or start of range.
         // Truncate 'now' to minute to ensure stable keys for slotOffsets (ignoring seconds)
         let now = Date()
@@ -113,31 +122,35 @@ class CalendarManager {
         // Round up to next 15 min
         let minute = calendar.component(.minute, from: currentTime)
         let remainder = 15 - (minute % 15)
-        // Always add remainder (if 15, it adds 0? No 15-0=15. If 0, 15-0=15.)
-        // Logic check: if min=0. rem=15. add 15? -> 15. Correct?
-        // If min=1. rem=14. add 14 -> 15.
-        // If min=14. rem=1. add 1 -> 15.
-        // If min=15. rem=15. add 15 -> 30.
-        // We want to snap to NEXT 15 minute mark.
         if remainder > 0 && remainder < 15 {
              currentTime = calendar.date(byAdding: .minute, value: remainder, to: currentTime)!
-        } else if remainder == 15 {
-             // we are on 0, 15, 30, 45 exactly? 
-             // wait minute % 15 == 0 -> remainder = 15.
-             // We can stay put if strictly greater? Or always round UP?
-             // Usually "suggest tasks" implies future. Let's snap to next or stay if exact.
-             // Let's keep logic simple: Stay if exact, otherwise forward.
-             // Original logic: if remainder < 15 { add }
-             // If minute is 0. remainder 15. We don't add. We stay at 0. Clean.
         }
         
-        // Ensure seconds are 0 (redundant if cleanNow used, but good for safety)
+        // Ensure seconds are 0
         currentTime = calendar.date(bySetting: .second, value: 0, of: currentTime) ?? currentTime
         currentTime = calendar.date(bySetting: .nanosecond, value: 0, of: currentTime) ?? currentTime
 
         var usedTaskIDs = Set<PersistentIdentifier>()
         
         while currentTime < dayEnd {
+             // CONSTRAINT CHECK:
+             let currentHour = calendar.component(.hour, from: currentTime)
+             
+             // If before start hour, jump to start hour of TODAY (or current day being scanned)
+             if currentHour < dayStartHour {
+                 // Set to dayStartHour:00
+                 currentTime = calendar.date(bySettingHour: dayStartHour, minute: 0, second: 0, of: currentTime)!
+                 // If we jumped backwards (rare if we started at 'now' which was > start), fix it?
+                 // Actually if 'now' is 7am and start is 9am, we jump to 9am. Correct.
+                 // If 'now' is 8pm and start is 9am... we are > start.
+             }
+             // If after end hour, jump to start hour of TOMORROW
+             else if currentHour >= dayEndHour {
+                 let tomorrow = calendar.date(byAdding: .day, value: 1, to: currentTime)!
+                 currentTime = calendar.date(bySettingHour: dayStartHour, minute: 0, second: 0, of: tomorrow)!
+                 continue
+             }
+            
             // Check overlap
             if let overlap = busyRanges.first(where: { $0.0 <= currentTime && $0.1 > currentTime }) {
                 currentTime = overlap.1
@@ -145,7 +158,25 @@ class CalendarManager {
             }
             
             let nextBusyStart = busyRanges.first(where: { $0.0 > currentTime })?.0 ?? dayEnd
-            let gapDuration = nextBusyStart.timeIntervalSince(currentTime)
+            // ALSO cap gap by End of Day logic?
+            // If nextBusyStart is tomorrow, but we must stop at dayEndHour...
+            // Logic handled by loop check + 'after end hour' check next iteration?
+            // Actually, if we schedule a task that goes past dayEndHour, is that allowed?
+            // Preferably not.
+            
+            // Determine effective gap end
+            var effectiveGapEnd = nextBusyStart
+            
+            // Calculate time until dayEndHour for current day
+            if let endOfWindow = calendar.date(bySettingHour: dayEndHour, minute: 0, second: 0, of: currentTime) {
+                // If endOfWindow is in past relative to currentTime (e.g. we are at 8pm, end is 5pm), loop handles it above.
+                // If we are at 2pm, end is 5pm.
+                if endOfWindow > currentTime {
+                    effectiveGapEnd = min(nextBusyStart, endOfWindow)
+                }
+            }
+            
+            let gapDuration = effectiveGapEnd.timeIntervalSince(currentTime)
             
             // IMPROVED BLOCK CHECK: Check if any blocked slot falls within the current hour
             if blockedSlots.contains(where: { calendar.isDate($0, equalTo: currentTime, toGranularity: .hour) }) {
@@ -159,8 +190,6 @@ class CalendarManager {
                     let fitsInGap = taskDuration <= gapDuration
                     let isUnused = !usedTaskIDs.contains(task.persistentModelID)
                     
-                    // If it's already archived, we still want it to "show up" where it was originally placed
-                    // OR simply include it in the pool.
                     return fitsInGap && isUnused
             }
             
@@ -183,7 +212,7 @@ class CalendarManager {
         self.dailySchedule = mixedSchedule
     }
     
-    // Helper to merge overlapping events (e.g. 2-3pm and 2:30-3:30pm -> 2-3:30pm)
+    // Helper to merge overlapping events
     private func flattenRanges(_ ranges: [(Date, Date)]) -> [(Date, Date)] {
         guard !ranges.isEmpty else { return [] }
         let sorted = ranges.sorted { $0.0 < $1.0 }
@@ -264,6 +293,15 @@ class CalendarManager {
     func resetDailyState() {
             slotOffsets.removeAll()
             blockedSlots.removeAll()
+            undoStack.removeAll()
+    }
+    
+    func signOut() {
+        GIDSignIn.sharedInstance.signOut()
+        user = nil
+        rawGoogleEvents = []
+        dailySchedule = []
+        resetDailyState()
     }
     
     private func dateMax(_ d1: Date, _ d2: Date) -> Date {
