@@ -204,14 +204,61 @@ class CalendarManager {
         return result
     }
     
+    // --- UNDO SYSTEM ---
+    enum UndoAction {
+        case swipeRight(Date)
+        case swipeLeft(Date)
+        case archive(PersistentIdentifier)
+    }
+    
+    var undoStack: [UndoAction] = []
+    
+    func registerUndo(_ action: UndoAction) {
+        undoStack.append(action)
+    }
+    
+    func undo(context: ModelContext) -> Bool {
+        guard let action = undoStack.popLast() else { return false }
+        
+        switch action {
+        case .swipeRight(let date):
+            // Revert swipe right (decrement offset)
+            if let count = slotOffsets[date], count > 0 {
+                slotOffsets[date] = count - 1
+            }
+            return true
+            
+        case .swipeLeft(let date):
+            // Revert swipe left (unblock slot)
+            blockedSlots.remove(date)
+            return true
+            
+        case .archive(let id):
+            // Revert archive (Fetch task and unarchive)
+            // We need to find the task by ID.
+            // Since we can't easily query by ID synchronously without descriptors or loop...
+            // We rely on the caller or context to help? 
+            // ModelContext doesn't have a simple "fetch by ID" without a descriptor.
+            // However, we can use a FetchDescriptor.
+            let descriptor = FetchDescriptor<LatticeTask>(predicate: #Predicate { $0.persistentModelID == id })
+            if let task = try? context.fetch(descriptor).first {
+                task.isArchived = false
+                return true
+            }
+            return false
+        }
+    }
+    
     // --- ACTIONS ---
     func swipeRight(on slotTime: Date) {
         let current = slotOffsets[slotTime] ?? 0
         slotOffsets[slotTime] = current + 1
+        registerUndo(.swipeRight(slotTime))
     }
     
     func swipeLeft(on slotTime: Date) {
         blockedSlots.insert(slotTime)
+        registerUndo(.swipeLeft(slotTime))
     }
     
     func resetDailyState() {

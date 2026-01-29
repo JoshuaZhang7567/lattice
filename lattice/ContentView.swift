@@ -185,6 +185,7 @@ struct TaskPageView: View {
     var tasks: [LatticeTask]
     @Binding var showNewTask: Bool
     var modelContext: ModelContext
+    @Environment(CalendarManager.self) var calendarManager
     
     var body: some View {
         VStack(spacing: 0) {
@@ -231,7 +232,10 @@ struct TaskPageView: View {
                     }
                     .swipeActions(edge: .leading, allowsFullSwipe: true) {
                         Button(role: .destructive) {
-                            withAnimation(.easeInOut(duration: 0.6)) { task.isArchived = true }
+                            withAnimation(.easeInOut(duration: 0.6)) { 
+                                task.isArchived = true
+                                calendarManager.registerUndo(.archive(task.persistentModelID))
+                            }
                         } label: { Label("Archive", systemImage: "archivebox.fill") }.tint(.blue)
                     }
                 }
@@ -280,6 +284,7 @@ struct CalendarPageView: View {
     var items: [CalendarItem]
     var allTasks: [LatticeTask]
     @Environment(CalendarManager.self) var calendarManager
+    @Environment(\.modelContext) var modelContext // Needed for Undo (unarchive)
     
     // Config
     // Config
@@ -392,8 +397,14 @@ struct CalendarPageView: View {
                                 generator.impactOccurred()
                                 withAnimation {
                                     task.isArchived.toggle()
-                                    // Trigger immediate refresh to update schedule if needed
-                                    // But binding update should trigger onChange in ContentView
+                                    // Register Undo if we just archived it (was false, now true)
+                                    // Wait, isArchived.toggle() flips it.
+                                    // If it BECAME archived (true), we register undo.
+                                    // If unarchived, we don't strictly need to register undo here unless we want redo? 
+                                    // Plan says "revert actions... archive". So if I archive, I can undo.
+                                    if task.isArchived {
+                                         calendarManager.registerUndo(.archive(task.persistentModelID))
+                                    }
                                 }
                             }
                         }
@@ -414,23 +425,27 @@ struct CalendarPageView: View {
             }
         }
             
-            // Refresh Button
+            // Undo Button (Replaces Refresh)
             Button(action: {
                 let generator = UIImpactFeedbackGenerator(style: .medium)
                 generator.impactOccurred()
                 withAnimation {
-                    calendarManager.resetDailyState()
-                    let end = Calendar.current.date(byAdding: .hour, value: 24, to: rangeStart)!
-                    calendarManager.generateSchedule(with: allTasks, rangeStart: rangeStart, rangeEnd: end)
+                    // Attempt Undo
+                    if calendarManager.undo(context: modelContext) {
+                        // If successful, regenerate schedule
+                        let end = Calendar.current.date(byAdding: .hour, value: 24, to: rangeStart)!
+                        calendarManager.generateSchedule(with: allTasks, rangeStart: rangeStart, rangeEnd: end)
+                    }
                 }
             }) {
-                Image(systemName: "arrow.counterclockwise")
+                Image(systemName: "arrow.uturn.backward")
                     .font(.system(size: 20, weight: .bold))
-                    .foregroundColor(.white)
+                    .foregroundColor(calendarManager.undoStack.isEmpty ? .white.opacity(0.3) : .white)
                     .frame(width: 50, height: 50)
-                    .background(Circle().fill(Color.blue).shadow(color: .blue.opacity(0.4), radius: 8, x: 0, y: 4))
+                    .background(Circle().fill(calendarManager.undoStack.isEmpty ? Color.gray.opacity(0.3) : Color.blue).shadow(color: calendarManager.undoStack.isEmpty ? .clear : .blue.opacity(0.4), radius: 8, x: 0, y: 4))
                     .overlay(Circle().stroke(Color.white.opacity(0.2), lineWidth: 1))
             }
+            .disabled(calendarManager.undoStack.isEmpty)
             .padding(.trailing, 25)
             .padding(.bottom, 25)
         }
