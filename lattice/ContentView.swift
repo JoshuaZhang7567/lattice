@@ -53,7 +53,7 @@ struct ContentView: View {
                                     .foregroundColor(.white.opacity(0.6))
                                 Spacer()
                                 
-                                // Settings Button
+                                // Settings Button 
                                 Button(action: {
                                     showSettings = true
                                 }) {
@@ -384,18 +384,9 @@ struct CalendarPageView: View {
                                 rangeStart: rangeStart, // Pass it down
                                 onSwipeRight: {
                                     withAnimation {
-                                        // PAST TASK LOGIC: "Return to Pool" / "Not Done"
-                                        // If it's in the past, we DON'T call swipeRight (which increments offset).
-                                        // We just refresh. The scheduler will see it's now in the past/unassigned 
-                                        // (wait, if we don't change state, it stays there? 
-                                        // Scheduler only schedules from 'now'. So if we refresh, it will be moved to > 'now'.
-                                        // It works automatically because 'generateSchedule' starts at 'now'. 
-                                        // So simply refreshing moves past tasks to future.)
-                                        
-                                        if date >= Date() {
-                                            // FUTURE TASK: "Suggest Next"
-                                            calendarManager.swipeRight(on: date)
-                                        }
+                                        // Swipe right: swap task (future) or return to pool (past)
+                                        // Both actions use swipeRight which handles undo registration
+                                        calendarManager.swipeRight(on: date, taskID: task.persistentModelID)
                                         
                                         let end = Calendar.current.date(byAdding: .hour, value: 24, to: rangeStart)!
                                         calendarManager.generateSchedule(with: allTasks, rangeStart: rangeStart, rangeEnd: end)
@@ -403,8 +394,8 @@ struct CalendarPageView: View {
                                 },
                                 onSwipeLeft: {
                                     withAnimation {
-                                        // Logic for delete or snooze
-                                        calendarManager.swipeLeft(on: date)
+                                        // Block this hour slot and clear task placement
+                                        calendarManager.swipeLeft(on: date, taskID: task.persistentModelID)
                                         let end = Calendar.current.date(byAdding: .hour, value: 24, to: rangeStart)!
                                         calendarManager.generateSchedule(with: allTasks, rangeStart: rangeStart, rangeEnd: end)
                                     }

@@ -26,6 +26,10 @@ class CalendarManager {
     var slotOffsets: [Date: Int] = [:]
     var blockedSlots: Set<Date> = []
     
+    // Track scheduled task placements to prevent rearrangement on refresh
+    // Maps task PersistentIdentifier -> scheduled start time
+    var scheduledTaskPlacements: [PersistentIdentifier: Date] = [:]
+    
     // Preferences (Persisted)
     var dayStartHour: Int {
         didSet { UserDefaults.standard.set(dayStartHour, forKey: "dayStartHour") }
@@ -75,6 +79,7 @@ class CalendarManager {
     }
     
     // UPDATED: Accepts specific Date range for rolling windows
+    // Now preserves task placements to prevent rearrangement on refresh
     func generateSchedule(with tasks: [LatticeTask], rangeStart: Date, rangeEnd: Date) {
         let calendar = Calendar.current
         var mixedSchedule: [CalendarItem] = []
@@ -91,8 +96,6 @@ class CalendarManager {
             if $0.targetDate != $1.targetDate {
                 return $0.targetDate < $1.targetDate
             }
-            // Tie-breaker: Use persistent ID string representation (or creation date if available)
-            // Assuming stable sort is needed regardless of active/archive status.
             return String(describing: $0.persistentModelID) < String(describing: $1.persistentModelID)
         }
         
@@ -104,7 +107,6 @@ class CalendarManager {
         var rawRanges: [(Date, Date)] = []
         for event in rawGoogleEvents {
             if let start = event.start?.dateTime?.date, let end = event.end?.dateTime?.date {
-                // Only consider events relevant to our window
                 if end > rangeStart && start < rangeEnd {
                     rawRanges.append((start, end))
                 }
@@ -112,11 +114,61 @@ class CalendarManager {
         }
         let busyRanges = flattenRanges(rawRanges)
         
-        // 5. Scan for Gaps
-        // Start scheduling from 'now' or start of range.
-        // Truncate 'now' to minute to ensure stable keys for slotOffsets (ignoring seconds)
         let now = Date()
         let cleanNow = calendar.date(bySetting: .second, value: 0, of: now) ?? now
+        
+        // === PHASE 1: Honor existing valid placements ===
+        var usedTaskIDs = Set<PersistentIdentifier>()
+        var occupiedRanges: [(Date, Date)] = [] // Track slots used by persisted tasks
+        
+        // Clean up stale placements (for archived tasks or tasks in the past)
+        var placementsToRemove: [PersistentIdentifier] = []
+        for (taskID, scheduledTime) in scheduledTaskPlacements {
+            // Find the task
+            guard let task = sortedTasks.first(where: { $0.persistentModelID == taskID }) else {
+                // Task no longer exists or isn't in our list
+                placementsToRemove.append(taskID)
+                continue
+            }
+            
+            let taskEnd = scheduledTime.addingTimeInterval(Double(task.durationMinutes) * 60)
+            
+            // Remove placement if:
+            // 1. Scheduled time is in the past (ended before now) AND task is not archived
+            //    (archived tasks in the past stay visible as historical record)
+            // 2. Slot is now blocked
+            // 3. Slot overlaps with a busy range (new calendar event)
+            // NOTE: Archived tasks keep their placements to stay visible (greyed out)
+            let isInPast = taskEnd < cleanNow && !task.isArchived
+            let isBlocked = blockedSlots.contains(where: { calendar.isDate($0, equalTo: scheduledTime, toGranularity: .hour) })
+            let overlapsWithBusy = busyRanges.contains(where: { $0.0 < taskEnd && $0.1 > scheduledTime })
+            
+            if isInPast || isBlocked || overlapsWithBusy {
+                placementsToRemove.append(taskID)
+            }
+        }
+        
+        for taskID in placementsToRemove {
+            scheduledTaskPlacements.removeValue(forKey: taskID)
+        }
+        
+        // Add tasks with valid existing placements to the schedule
+        for task in sortedTasks {
+            if let scheduledTime = scheduledTaskPlacements[task.persistentModelID] {
+                // Verify it's within our display range
+                if scheduledTime >= rangeStart && scheduledTime < rangeEnd {
+                    mixedSchedule.append(.task(task, scheduledTime))
+                    usedTaskIDs.insert(task.persistentModelID)
+                    let taskEnd = scheduledTime.addingTimeInterval(Double(task.durationMinutes) * 60)
+                    occupiedRanges.append((scheduledTime, taskEnd))
+                }
+            }
+        }
+        
+        // Flatten occupied ranges for collision detection
+        let allBusyRanges = flattenRanges(busyRanges + occupiedRanges)
+        
+        // === PHASE 2: Schedule remaining tasks (only those without placements) ===
         var currentTime = dateMax(dayStart, cleanNow)
         
         // Round up to next 15 min
@@ -129,48 +181,29 @@ class CalendarManager {
         // Ensure seconds are 0
         currentTime = calendar.date(bySetting: .second, value: 0, of: currentTime) ?? currentTime
         currentTime = calendar.date(bySetting: .nanosecond, value: 0, of: currentTime) ?? currentTime
-
-        var usedTaskIDs = Set<PersistentIdentifier>()
         
         while currentTime < dayEnd {
-             // CONSTRAINT CHECK:
              let currentHour = calendar.component(.hour, from: currentTime)
              
-             // If before start hour, jump to start hour of TODAY (or current day being scanned)
              if currentHour < dayStartHour {
-                 // Set to dayStartHour:00
                  currentTime = calendar.date(bySettingHour: dayStartHour, minute: 0, second: 0, of: currentTime)!
-                 // If we jumped backwards (rare if we started at 'now' which was > start), fix it?
-                 // Actually if 'now' is 7am and start is 9am, we jump to 9am. Correct.
-                 // If 'now' is 8pm and start is 9am... we are > start.
              }
-             // If after end hour, jump to start hour of TOMORROW
              else if currentHour >= dayEndHour {
                  let tomorrow = calendar.date(byAdding: .day, value: 1, to: currentTime)!
                  currentTime = calendar.date(bySettingHour: dayStartHour, minute: 0, second: 0, of: tomorrow)!
                  continue
              }
             
-            // Check overlap
-            if let overlap = busyRanges.first(where: { $0.0 <= currentTime && $0.1 > currentTime }) {
+            // Check overlap with all busy ranges (including tasks already placed)
+            if let overlap = allBusyRanges.first(where: { $0.0 <= currentTime && $0.1 > currentTime }) {
                 currentTime = overlap.1
                 continue
             }
             
-            let nextBusyStart = busyRanges.first(where: { $0.0 > currentTime })?.0 ?? dayEnd
-            // ALSO cap gap by End of Day logic?
-            // If nextBusyStart is tomorrow, but we must stop at dayEndHour...
-            // Logic handled by loop check + 'after end hour' check next iteration?
-            // Actually, if we schedule a task that goes past dayEndHour, is that allowed?
-            // Preferably not.
+            let nextBusyStart = allBusyRanges.first(where: { $0.0 > currentTime })?.0 ?? dayEnd
             
-            // Determine effective gap end
             var effectiveGapEnd = nextBusyStart
-            
-            // Calculate time until dayEndHour for current day
             if let endOfWindow = calendar.date(bySettingHour: dayEndHour, minute: 0, second: 0, of: currentTime) {
-                // If endOfWindow is in past relative to currentTime (e.g. we are at 8pm, end is 5pm), loop handles it above.
-                // If we are at 2pm, end is 5pm.
                 if endOfWindow > currentTime {
                     effectiveGapEnd = min(nextBusyStart, endOfWindow)
                 }
@@ -178,19 +211,20 @@ class CalendarManager {
             
             let gapDuration = effectiveGapEnd.timeIntervalSince(currentTime)
             
-            // IMPROVED BLOCK CHECK: Check if any blocked slot falls within the current hour
             if blockedSlots.contains(where: { calendar.isDate($0, equalTo: currentTime, toGranularity: .hour) }) {
                 currentTime = calendar.date(byAdding: .hour, value: 1, to: currentTime)!
                 continue
             }
                 
-            // Find candidates
+            // Find candidates (only tasks without existing placements)
             let candidates = sortedTasks.filter { task in
                     let taskDuration = Double(task.durationMinutes) * 60
                     let fitsInGap = taskDuration <= gapDuration
                     let isUnused = !usedTaskIDs.contains(task.persistentModelID)
+                    let hasNoPlacement = scheduledTaskPlacements[task.persistentModelID] == nil
+                    let isNotArchived = !task.isArchived
                     
-                    return fitsInGap && isUnused
+                    return fitsInGap && isUnused && hasNoPlacement && isNotArchived
             }
             
             if !candidates.isEmpty {
@@ -201,10 +235,11 @@ class CalendarManager {
                 mixedSchedule.append(.task(selectedTask, currentTime))
                 usedTaskIDs.insert(selectedTask.persistentModelID)
                 
-                // Advance time (Duration only, no buffer)
+                // Store the placement for persistence
+                scheduledTaskPlacements[selectedTask.persistentModelID] = currentTime
+                
                 currentTime = currentTime.addingTimeInterval(Double(selectedTask.durationMinutes) * 60)
             } else {
-                // No task fits, step forward 30m
                 currentTime = currentTime.addingTimeInterval(1800)
             }
         }
@@ -235,8 +270,10 @@ class CalendarManager {
     
     // --- UNDO SYSTEM ---
     enum UndoAction {
-        case swipeRight(Date)
-        case swipeLeft(Date)
+        // swipeRight: slot time, task ID that was displaced, its original placement time
+        case swipeRight(slotTime: Date, taskID: PersistentIdentifier, originalPlacement: Date)
+        // swipeLeft: slot time, task ID that was displaced, its original placement time
+        case swipeLeft(slotTime: Date, taskID: PersistentIdentifier, originalPlacement: Date)
         case archive(PersistentIdentifier)
     }
     
@@ -250,25 +287,32 @@ class CalendarManager {
         guard let action = undoStack.popLast() else { return false }
         
         switch action {
-        case .swipeRight(let date):
-            // Revert swipe right (decrement offset)
-            if let count = slotOffsets[date], count > 0 {
-                slotOffsets[date] = count - 1
+        case .swipeRight(let slotTime, let taskID, let originalPlacement):
+            // Revert swipe right: decrement offset and restore task placement
+            if let count = slotOffsets[slotTime], count > 0 {
+                slotOffsets[slotTime] = count - 1
             }
+            
+            // Clear any task that was placed at the original slot (to avoid overlap)
+            for (id, placement) in scheduledTaskPlacements {
+                if placement == originalPlacement && id != taskID {
+                    scheduledTaskPlacements.removeValue(forKey: id)
+                    break
+                }
+            }
+            
+            // Restore the task's original placement
+            scheduledTaskPlacements[taskID] = originalPlacement
             return true
             
-        case .swipeLeft(let date):
-            // Revert swipe left (unblock slot)
-            blockedSlots.remove(date)
+        case .swipeLeft(let slotTime, let taskID, let originalPlacement):
+            // Revert swipe left: unblock slot and restore task placement
+            blockedSlots.remove(slotTime)
+            // Restore the task's original placement
+            scheduledTaskPlacements[taskID] = originalPlacement
             return true
             
         case .archive(let id):
-            // Revert archive (Fetch task and unarchive)
-            // We need to find the task by ID.
-            // Since we can't easily query by ID synchronously without descriptors or loop...
-            // We rely on the caller or context to help? 
-            // ModelContext doesn't have a simple "fetch by ID" without a descriptor.
-            // However, we can use a FetchDescriptor.
             let descriptor = FetchDescriptor<LatticeTask>(predicate: #Predicate { $0.persistentModelID == id })
             if let task = try? context.fetch(descriptor).first {
                 task.isArchived = false
@@ -279,21 +323,35 @@ class CalendarManager {
     }
     
     // --- ACTIONS ---
-    func swipeRight(on slotTime: Date) {
+    // Swipe right: Swap to different task for this slot
+    // Clears the current task's placement so it gets rescheduled elsewhere
+    func swipeRight(on slotTime: Date, taskID: PersistentIdentifier) {
         let current = slotOffsets[slotTime] ?? 0
         slotOffsets[slotTime] = current + 1
-        registerUndo(.swipeRight(slotTime))
+        
+        // Record the original placement for undo, then clear it
+        let originalPlacement = scheduledTaskPlacements[taskID] ?? slotTime
+        scheduledTaskPlacements.removeValue(forKey: taskID)
+        
+        registerUndo(.swipeRight(slotTime: slotTime, taskID: taskID, originalPlacement: originalPlacement))
     }
     
-    func swipeLeft(on slotTime: Date) {
+    // Swipe left: Block this hour and reschedule the task
+    func swipeLeft(on slotTime: Date, taskID: PersistentIdentifier) {
         blockedSlots.insert(slotTime)
-        registerUndo(.swipeLeft(slotTime))
+        
+        // Record the original placement for undo, then clear it
+        let originalPlacement = scheduledTaskPlacements[taskID] ?? slotTime
+        scheduledTaskPlacements.removeValue(forKey: taskID)
+        
+        registerUndo(.swipeLeft(slotTime: slotTime, taskID: taskID, originalPlacement: originalPlacement))
     }
     
     func resetDailyState() {
-            slotOffsets.removeAll()
-            blockedSlots.removeAll()
-            undoStack.removeAll()
+        slotOffsets.removeAll()
+        blockedSlots.removeAll()
+        undoStack.removeAll()
+        scheduledTaskPlacements.removeAll()
     }
     
     func signOut() {
