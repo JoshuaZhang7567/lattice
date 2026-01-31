@@ -51,6 +51,52 @@ struct SettingsView: View {
                     .padding(.horizontal, 40)
                 }
                 
+                // Calendar Selection
+                VStack(spacing: 16) {
+                    Text("Calendars to Sync")
+                        .font(.headline)
+                        .foregroundColor(.white.opacity(0.8))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.leading, 40)
+                    
+                    if calendarManager.availableCalendars.isEmpty {
+                        Text("Loading calendars...")
+                            .foregroundColor(.white.opacity(0.5))
+                            .font(.subheadline)
+                            .padding(.horizontal, 40)
+                    } else {
+                        ScrollView {
+                            VStack(spacing: 12) {
+                                ForEach(calendarManager.availableCalendars) { calendar in
+                                    HStack(spacing: 12) {
+                                        // Calendar color indicator
+                                        Circle()
+                                            .fill(calendar.displayColor)
+                                            .frame(width: 12, height: 12)
+                                        
+                                        // Calendar name
+                                        Text(calendar.summary)
+                                            .foregroundColor(.white)
+                                            .lineLimit(1)
+                                        
+                                        Spacer()
+                                        
+                                        // Toggle
+                                        Toggle("", isOn: Binding(
+                                            get: { calendarManager.selectedCalendarIds.contains(calendar.id) },
+                                            set: { _ in calendarManager.toggleCalendarSelection(id: calendar.id) }
+                                        ))
+                                        .labelsHidden()
+                                        .tint(.blue)
+                                    }
+                                    .padding(.horizontal, 40)
+                                }
+                            }
+                        }
+                        .frame(maxHeight: 200)
+                    }
+                }
+                
                 Spacer()
                 
                 // Sign Out Button
@@ -75,6 +121,12 @@ struct SettingsView: View {
             .padding()
         }
         .preferredColorScheme(.dark)
+        .onAppear {
+            calendarManager.fetchCalendarList()
+        }
+        .onChange(of: calendarManager.selectedCalendarIds) { _, _ in
+            calendarManager.fetchTodayEvents()
+        }
     }
     
     func formatHour(_ hour: Int) -> String {

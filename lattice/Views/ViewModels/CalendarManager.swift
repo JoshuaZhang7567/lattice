@@ -16,6 +16,35 @@ enum CalendarItem: Identifiable {
     }
 }
 
+// Model for Google Calendar entries
+struct GoogleCalendarEntry: Identifiable, Hashable {
+    let id: String
+    let summary: String
+    let colorHex: String?
+    let isPrimary: Bool
+    
+    var displayColor: Color {
+        guard let hex = colorHex else { return .blue }
+        return Color(hex: hex) ?? .blue
+    }
+}
+
+extension Color {
+    init?(hex: String) {
+        var hexSanitized = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        hexSanitized = hexSanitized.replacingOccurrences(of: "#", with: "")
+        
+        var rgb: UInt64 = 0
+        guard Scanner(string: hexSanitized).scanHexInt64(&rgb) else { return nil }
+        
+        let r = Double((rgb & 0xFF0000) >> 16) / 255.0
+        let g = Double((rgb & 0x00FF00) >> 8) / 255.0
+        let b = Double(rgb & 0x0000FF) / 255.0
+        
+        self.init(red: r, green: g, blue: b)
+    }
+}
+
 @Observable
 class CalendarManager {
     var user: GIDGoogleUser?
@@ -30,6 +59,14 @@ class CalendarManager {
     // Maps task PersistentIdentifier -> scheduled start time
     var scheduledTaskPlacements: [PersistentIdentifier: Date] = [:]
     
+    // Calendar Selection
+    var availableCalendars: [GoogleCalendarEntry] = []
+    var selectedCalendarIds: Set<String> {
+        didSet {
+            UserDefaults.standard.set(Array(selectedCalendarIds), forKey: "selectedCalendarIds")
+        }
+    }
+    
     // Preferences (Persisted)
     var dayStartHour: Int {
         didSet { UserDefaults.standard.set(dayStartHour, forKey: "dayStartHour") }
@@ -43,12 +80,24 @@ class CalendarManager {
     init() {
         self.dayStartHour = UserDefaults.standard.object(forKey: "dayStartHour") as? Int ?? 9
         self.dayEndHour = UserDefaults.standard.object(forKey: "dayEndHour") as? Int ?? 17
+        
+        // Load saved calendar selection
+        if let savedIds = UserDefaults.standard.array(forKey: "selectedCalendarIds") as? [String] {
+            self.selectedCalendarIds = Set(savedIds)
+        } else {
+            // Default to primary calendar
+            self.selectedCalendarIds = ["primary"]
+        }
     }
     
     // --- AUTH & FETCH (Unchanged) ---
     func checkPreviousSignIn() {
         GIDSignIn.sharedInstance.restorePreviousSignIn { user, error in
-            if let user = user { self.setup(with: user); self.fetchTodayEvents() }
+            if let user = user {
+                self.setup(with: user)
+                self.fetchCalendarList()
+                self.fetchTodayEvents()
+            }
         }
     }
     
@@ -57,23 +106,88 @@ class CalendarManager {
         self.service.authorizer = user.fetcherAuthorizer
     }
     
+    // Fetch list of all available calendars
+    func fetchCalendarList() {
+        guard user != nil else { return }
+        
+        let query = GTLRCalendarQuery_CalendarListList.query()
+        
+        service.executeQuery(query) { ticket, result, error in
+            if let error = error { return }
+            
+            if let list = result as? GTLRCalendar_CalendarList, let items = list.items {
+                DispatchQueue.main.async {
+                    self.availableCalendars = items.compactMap { entry in
+                        guard let id = entry.identifier, let summary = entry.summary else { return nil }
+                        return GoogleCalendarEntry(
+                            id: id,
+                            summary: summary,
+                            colorHex: entry.backgroundColor,
+                            isPrimary: entry.primary?.boolValue ?? false
+                        )
+                    }
+                    
+                    // If no calendars selected yet, default to primary
+                    if self.selectedCalendarIds.isEmpty || self.selectedCalendarIds == ["primary"] {
+                        if let primaryCal = self.availableCalendars.first(where: { $0.isPrimary }) {
+                            self.selectedCalendarIds = [primaryCal.id]
+                        } else if let firstCal = self.availableCalendars.first {
+                            self.selectedCalendarIds = [firstCal.id]
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Toggle calendar selection
+    func toggleCalendarSelection(id: String) {
+        if selectedCalendarIds.contains(id) {
+            // Don't allow deselecting the last calendar
+            if selectedCalendarIds.count > 1 {
+                selectedCalendarIds.remove(id)
+            }
+        } else {
+            selectedCalendarIds.insert(id)
+        }
+    }
+    
     func fetchTodayEvents() {
         guard user != nil else { return }
-        let query = GTLRCalendarQuery_EventsList.query(withCalendarId: "primary")
+        
         let calendar = Calendar.current
         let startOfDay = calendar.startOfDay(for: Date())
         let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay)!
         
-        query.timeMin = GTLRDateTime(date: startOfDay)
-        query.timeMax = GTLRDateTime(date: endOfDay)
-        query.singleEvents = true
-        query.orderBy = kGTLRCalendarOrderByStartTime
+        // Clear existing events before fetching
+        var allEvents: [GTLRCalendar_Event] = []
+        let group = DispatchGroup()
         
-        service.executeQuery(query) { ticket, result, error in
-            if let list = result as? GTLRCalendar_Events, let items = list.items {
-                DispatchQueue.main.async {
-                    self.rawGoogleEvents = items
+        for calendarId in selectedCalendarIds {
+            group.enter()
+            
+            let query = GTLRCalendarQuery_EventsList.query(withCalendarId: calendarId)
+            query.timeMin = GTLRDateTime(date: startOfDay)
+            query.timeMax = GTLRDateTime(date: endOfDay)
+            query.singleEvents = true
+            query.orderBy = kGTLRCalendarOrderByStartTime
+            
+            service.executeQuery(query) { ticket, result, error in
+                if let list = result as? GTLRCalendar_Events, let items = list.items {
+                    DispatchQueue.main.async {
+                        allEvents.append(contentsOf: items)
+                    }
                 }
+                group.leave()
+            }
+        }
+        
+        group.notify(queue: .main) {
+            // Sort events by start time
+            self.rawGoogleEvents = allEvents.sorted { e1, e2 in
+                let d1 = e1.start?.dateTime?.date ?? e1.start?.date?.date ?? Date.distantFuture
+                let d2 = e2.start?.dateTime?.date ?? e2.start?.date?.date ?? Date.distantFuture
+                return d1 < d2
             }
         }
     }

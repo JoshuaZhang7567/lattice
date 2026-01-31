@@ -116,7 +116,7 @@ struct ContentView: View {
                 }
                 .sheet(isPresented: $showSettings) {
                     SettingsView()
-                        .presentationDetents([.fraction(0.4)])
+                        .presentationDetents([.fraction(1)])
                         .presentationDragIndicator(.visible)
                 }
                 // TRIGGERS
